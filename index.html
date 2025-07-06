@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<title>장애물 게임</title>
+<style>
+  html, body { margin:0; padding:0; overflow:hidden; background:#222; }
+  canvas { display:block; background:#111; margin:0 auto; }
+  #ui {
+    position:absolute; top:10px; left:10px; color:#fff;
+    font:20px sans-serif;
+  }
+  .button {
+    padding:10px 20px; margin:5px; background:#444; color:#fff;
+    cursor:pointer; display:inline-block; border-radius:5px;
+  }
+  .button:hover { background:#666; }
+</style>
+</head>
+<body>
+
+<div id="ui"></div>
+<canvas id="gameCanvas" width="800" height="600"></canvas>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const ui = document.getElementById('ui');
+
+let gameState = 'menu';
+let currentStage = 0;
+let timer = 0;
+let lastTime = 0;
+
+const keys = {};
+document.addEventListener('keydown', e => keys[e.code] = true);
+document.addEventListener('keyup', e => keys[e.code] = false);
+
+const gravity = 0.5;
+const friction = 0.8;
+
+class Entity {
+  constructor(x, y, w, h) {
+    this.x = x; this.y = y;
+    this.w = w; this.h = h;
+  }
+  draw(color) {
+    ctx.fillStyle = color;
+    ctx.fillRect(this.x, this.y, this.w, this.h);
+  }
+  collidesWith(other) {
+    return !(this.x + this.w <= other.x ||
+             this.x >= other.x + other.w ||
+             this.y + this.h <= other.y ||
+             this.y >= other.y + other.h);
+  }
+}
+
+class MovingObstacle extends Entity {
+  constructor(x, y, w, h, minX, maxX, speed) {
+    super(x, y, w, h);
+    this.minX = minX;
+    this.maxX = maxX;
+    this.speed = speed;
+    this.dir = 1;
+  }
+  update() {
+    this.x += this.speed * this.dir;
+    if (this.x < this.minX) { this.x = this.minX; this.dir *= -1; }
+    else if (this.x > this.maxX) { this.x = this.maxX; this.dir *= -1; }
+  }
+  draw() {
+    ctx.fillStyle = '#f90';
+    ctx.fillRect(this.x, this.y, this.w, this.h);
+  }
+}
+
+class Player extends Entity {
+  constructor(x, y, color) {
+    super(x, y, 40, 60);
+    this.color = color;
+    this.vx = 0;
+    this.vy = 0;
+    this.onGround = false;
+    this.startX = x;
+    this.startY = y;
+  }
+  resetPosition() {
+    this.x = this.startX;
+    this.y = this.startY;
+    this.vx = 0;
+    this.vy = 0;
+    this.onGround = false;
+  }
+  update(platforms, obstacles, movingObs, ctrl) {
+    // 이동 입력
+    if (keys[ctrl.left]) this.vx = -4;
+    else if (keys[ctrl.right]) this.vx = 4;
+    else this.vx *= friction;
+
+    // 점프 입력
+    if (keys[ctrl.jump] && this.onGround) {
+      this.vy = -12;
+      this.onGround = false;
+    }
+
+    this.vy += gravity;
+
+    // 이동
+    this.x += this.vx;
+    this.y += this.vy;
+
+    // 바닥 충돌 체크 (플랫폼, 장애물, 이동장애물 포함)
+    this.onGround = false;
+    const grounds = [...platforms, ...obstacles, ...movingObs];
+    for (let o of grounds) {
+      if (this.x + this.w > o.x && this.x < o.x + o.w) {
+        // 수직 충돌 체크: 플레이어 발이 장애물 위에 닿을 경우
+        if (this.y + this.h > o.y && this.y + this.h - this.vy <= o.y) {
+          this.y = o.y - this.h;
+          this.vy = 0;
+          this.onGround = true;
+        }
+      }
+    }
+
+    // 장애물 충돌시 리셋 (물/불 장애물 포함)
+    const allObs = [...obstacles, ...movingObs];
+    for (let o of allObs) {
+      if (this.collidesWith(o)) {
+        this.resetPosition();
+        break;
+      }
+    }
+
+    // 낭떠러지(플레이어가 화면 아래로 떨어지면 리셋)
+    if (this.y > canvas.height + 100) {
+      this.resetPosition();
+    }
+
+    // 캔버스 밖 이동 막기 (좌우)
+    if (this.x < 0) this.x = 0;
+    if (this.x + this.w > canvas.width) this.x = canvas.width - this.w;
+  }
+  draw() {
+    ctx.fillStyle = this.color;
+    ctx.fillRect(this.x, this.y, this.w, this.h);
+  }
+}
+
+class Portal extends Entity {
+  draw() {
+    ctx.fillStyle = 'lime';
+    ctx.fillRect(this.x, this.y, this.w, this.h);
+    // 포탈 애니메이션 (빛나는 효과)
+    ctx.strokeStyle = 'white';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(this.x, this.y, this.w, this.h);
+  }
+}
+
+// 스테이지 데이터 생성
+const stages = [
+  {
+    platforms: [new Entity(0, 580, 800, 20)],
+    obstacles: [new Entity(300, 540, 40, 40)],
+    movingObs: [new MovingObstacle(200, 520, 60, 20, 200, 400, 2)],
+    portal: new Entity(700, 520, 50, 60),
+    fireboyStart: {x: 100, y: 520},
+    watergirlStart: {x: 200, y: 520},
+  },
+  {
+    platforms: [new Entity(0, 580, 800, 20), new Entity(150, 460, 120, 20)],
+    obstacles: [new Entity(350, 540, 40, 40), new Entity(500, 540, 40, 40)],
+    movingObs: [new MovingObstacle(220, 440, 50, 20, 220, 350, 3), new MovingObstacle(550, 540, 50, 20, 550, 700, 2)],
+    portal: new Entity(700, 400, 50, 60),
+    fireboyStart: {x: 100, y: 520},
+    watergirlStart: {x: 160, y: 420},
+  },
+  {
+    platforms: [
+      new Entity(0, 580, 800, 20),
+      new Entity(140, 460, 120, 20),
+      new Entity(400, 340, 100, 20)
+    ],
+    obstacles: [
+      new Entity(350, 540, 40, 40),
+      new Entity(500, 540, 40, 40),
+      new Entity(600, 320, 40, 40),
+    ],
+    movingObs: [
+      new MovingObstacle(220, 440, 50, 20, 220, 350, 3),
+      new MovingObstacle(550, 540, 50, 20, 550, 700, 2),
+      new MovingObstacle(420, 320, 40, 20, 420, 480, 4)
+    ],
+    portal: new Entity(720, 280, 50, 60),
+    fireboyStart: {x: 100, y: 520},
+    watergirlStart: {x: 160, y: 280},
+  },
+  {
+    platforms: [
+      new Entity(0, 580, 800, 20),
+      new Entity(120, 460, 100, 20),
+      new Entity(400, 340, 100, 20),
+      new Entity(600, 220, 100, 20),
+    ],
+    obstacles: [
+      new Entity(350, 540, 40, 40),
+      new Entity(500, 540, 40, 40),
+      new Entity(600, 320, 40, 40),
+      new Entity(620, 200, 40, 40),
+    ],
+    movingObs: [
+      new MovingObstacle(220, 440, 50, 20, 220, 350, 3),
+      new MovingObstacle(550, 540, 50, 20, 550, 700, 2),
+      new MovingObstacle(420, 320, 40, 20, 420, 480, 4),
+      new MovingObstacle(630, 200, 40, 20, 630, 720, 3)
+    ],
+    portal: new Entity(720, 160, 50, 60),
+    fireboyStart: {x: 100, y: 520},
+    watergirlStart: {x: 160, y: 160},
+  },
+  {
+    platforms: [
+      new Entity(0, 580, 800, 20),
+      new Entity(120, 460, 100, 20),
+      new Entity(400, 340, 100, 20),
+      new Entity(600, 220, 100, 20),
+      new Entity(700, 100, 90, 20),
+    ],
+    obstacles: [
+      new Entity(350, 540, 40, 40),
+      new Entity(500, 540, 40, 40),
+      new Entity(600, 320, 40, 40),
+      new Entity(620, 200, 40, 40),
+      new Entity(710, 80, 40, 40),
+    ],
+    movingObs: [
+      new MovingObstacle(220, 440, 50, 20, 220, 350, 3),
+      new MovingObstacle(550, 540, 50, 20, 550, 700, 2),
+      new MovingObstacle(420, 320, 40, 20, 420, 480, 4),
+      new MovingObstacle(630, 200, 40, 20, 630, 720, 3),
+      new MovingObstacle(710, 80, 40, 20, 710, 780, 4)
+    ],
+    portal: new Entity(720, 60, 50, 60),
+    fireboyStart: {x: 100, y: 520},
+    watergirlStart: {x: 160, y: 60},
+  }
+];
+
+// 플레이어 생성
+const fireboy = new Player(100, 520, 'red');
+const watergirl = new Player(200, 520, 'blue');
+
+let platforms = [];
+let obstacles = [];
+let movingObs = [];
+let portal;
+
+function loadStage(n) {
+  currentStage = n;
+  const stage = stages[n];
+  platforms = stage.platforms;
+  obstacles = stage.obstacles;
+  movingObs = stage.movingObs;
+  portal = stage.portal;
+
+  fireboy.startX = stage.fireboyStart.x;
+  fireboy.startY = stage.fireboyStart.y;
+  watergirl.startX = stage.watergirlStart.x;
+  watergirl.startY = stage.watergirlStart.y;
+
+  fireboy.resetPosition();
+  watergirl.resetPosition();
+
+  timer = 0;
+  lastTime = Date.now();
+}
+
+// 시간 형식 mm:ss
+function formatTime(t) {
+  const m = String(Math.floor(t / 60)).padStart(2, '0');
+  const s = String(t % 60).padStart(2, '0');
+  return `${m}:${s}`;
+}
+
+// 메뉴 UI 생성
+function createMenu() {
+  ui.innerHTML =
+    `<h2>스테이지 선택</h2>` +
+    stages
+      .map((_, i) => `<div class="button" onclick="startStage(${i})">Stage ${i + 1}</div>`)
+      .join('');
+}
+
+// 스테이지 시작 함수
+window.startStage = function(n) {
+  gameState = 'playing';
+  ui.innerHTML = '';
+  loadStage(n);
+  requestAnimationFrame(gameLoop);
+};
+
+// 게임 루프
+function gameLoop() {
+  if (gameState !== 'playing') return;
+
+  const now = Date.now();
+  const dt = (now - lastTime) / 1000;
+  lastTime = now;
+  timer += dt;
+
+  // 이동 장애물 업데이트
+  movingObs.forEach(m => m.update());
+
+  // 플레이어 업데이트
+  fireboy.update(platforms, obstacles, movingObs, { left: 'ArrowLeft', right: 'ArrowRight', jump: 'ArrowUp' });
+  watergirl.update(platforms, obstacles, movingObs, { left: 'KeyA', right: 'KeyD', jump: 'KeyW' });
+
+  // 배경
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // 플랫폼, 장애물, 이동장애물, 포탈 그리기
+  platforms.forEach(p => p.draw('#555'));
+  obstacles.forEach(o => o.draw('#880000')); // 빨간색 장애물
+  movingObs.forEach(m => m.draw());
+  portal.draw();
+
+  // 플레이어 그리기
+  fireboy.draw();
+  watergirl.draw();
+
+  // UI 정보
+  ctx.fillStyle = '#fff';
+  ctx.font = '20px sans-serif';
+  ctx.fillText(`Stage ${currentStage + 1}`, 10, 30);
+  ctx.fillText(`Time: ${formatTime(Math.floor(timer))}`, 650, 30);
+
+  // 클리어 조건 (두 플레이어 모두 포탈 내)
+  const fIn = fireboy.collidesWith(portal);
+  const wIn = watergirl.collidesWith(portal);
+
+  if (fIn && wIn) {
+    if (currentStage < stages.length - 1) {
+      loadStage(currentStage + 1);
+    } else {
+      gameState = 'menu';
+      alert(`🎉 모두 클리어! 총 시간: ${formatTime(Math.floor(timer))}`);
+      createMenu();
+      return;
+    }
+  }
+
+  requestAnimationFrame(gameLoop);
+}
+
+createMenu();
+</script>
+
+</body>
+</html>
